@@ -105,7 +105,7 @@ func GetFavorites(db *sql.DB) gin.HandlerFunc {
 				&restaurant.Latitude,
 				&restaurant.Longitude,
 				&restaurant.Image,
-				&restaurant.Rating,
+				&restaurant.RatingRata2,
 			)
 			if err != nil {
 				c.JSON(500, gin.H{

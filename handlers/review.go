@@ -1,17 +1,20 @@
 package handlers
 
 import (
-	"database/sql"
-	"strconv"
 	"backend-fp-alpro/models"
+	"database/sql"
 	"github.com/gin-gonic/gin"
+	"strconv"
 )
 
 func GetReviews(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		rows, err := db.Query(
-			"SELECT id, restaurant_id, reviewer, rating, comment FROM reviews",
-		)
+		rows, err := db.Query(`
+			SELECT id, restaurant_id, reviewer, rating, comment,
+			       created_at, COALESCE(foto_url, '')
+			FROM reviews
+			ORDER BY created_at DESC
+		`)
 		if err != nil {
 			c.JSON(500, gin.H{
 				"message": "Failed to get reviews",
@@ -28,6 +31,8 @@ func GetReviews(db *sql.DB) gin.HandlerFunc {
 				&review.Reviewer,
 				&review.Rating,
 				&review.Comment,
+				&review.CreatedAt,
+				&review.Image,
 			)
 			if err != nil {
 				c.JSON(500, gin.H{
@@ -93,16 +98,48 @@ func CreateReview(db *sql.DB) gin.HandlerFunc {
 			})
 			return
 		}
+		var existingReview int
 		err = db.QueryRow(
-			`INSERT INTO reviews (restaurant_id, user_id, reviewer, rating, comment)
-			VALUES ($1, $2, $3, $4, $5)
-			RETURNING id`,
+			`SELECT id
+			 FROM reviews
+			 WHERE user_id = $1
+			 AND restaurant_id = $2`,
+			userIDInt,
+			review.RestaurantID,
+		).Scan(&existingReview)
+		if err == nil {
+			c.JSON(409, gin.H{
+				"message": "You have already reviewed this restaurant",
+			})
+			return
+		}
+		if err != sql.ErrNoRows {
+			c.JSON(500, gin.H{
+				"message": "Failed to check existing review",
+			})
+			return
+		}
+		err = db.QueryRow(
+			`INSERT INTO reviews (
+				restaurant_id,
+				user_id,
+				reviewer,
+				rating,
+				comment,
+				foto_url
+			)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			RETURNING id, created_at`,
 			review.RestaurantID,
 			userIDInt,
 			reviewer,
 			review.Rating,
 			review.Comment,
-		).Scan(&review.ID)
+			review.Image,
+		).Scan(
+			&review.ID,
+			&review.CreatedAt,
+		)
 		if err != nil {
 			c.JSON(500, gin.H{
 				"message": "Failed to add review",
@@ -119,7 +156,13 @@ func GetReviewByID(db *sql.DB) gin.HandlerFunc {
 		id := c.Param("id")
 		var review models.Review
 		err := db.QueryRow(
-			`SELECT id, restaurant_id, reviewer, rating, comment
+			`SELECT id,
+			        restaurant_id,
+			        reviewer,
+			        rating,
+			        comment,
+			        created_at,
+			        COALESCE(foto_url, '')
 			 FROM reviews
 			 WHERE id = $1`,
 			id,
@@ -129,6 +172,8 @@ func GetReviewByID(db *sql.DB) gin.HandlerFunc {
 			&review.Reviewer,
 			&review.Rating,
 			&review.Comment,
+			&review.CreatedAt,
+			&review.Image,
 		)
 		if err != nil {
 			c.JSON(404, gin.H{
@@ -195,12 +240,18 @@ func UpdateReview(db *sql.DB) gin.HandlerFunc {
 		}
 		result, err := db.Exec(
 			`UPDATE reviews
-			 SET restaurant_id = $1, reviewer = $2, rating = $3, comment = $4
-			 WHERE id = $5 AND user_id = $6`,
+			 SET restaurant_id = $1,
+			     reviewer = $2,
+			     rating = $3,
+			     comment = $4,
+			     foto_url = $5
+			 WHERE id = $6
+			 AND user_id = $7`,
 			review.RestaurantID,
 			reviewer,
 			review.Rating,
 			review.Comment,
+			review.Image,
 			id,
 			userIDInt,
 		)
@@ -223,14 +274,28 @@ func UpdateReview(db *sql.DB) gin.HandlerFunc {
 			})
 			return
 		}
+		var createdAt string
+		err = db.QueryRow(
+			`SELECT created_at
+			 FROM reviews
+			 WHERE id = $1`,
+			id,
+		).Scan(&createdAt)
+		if err != nil {
+			c.JSON(500, gin.H{
+				"message": "Failed to get updated review",
+			})
+			return
+		}
 		reviewID, _ := strconv.Atoi(id)
-		review.Reviewer = reviewer
-		c.JSON(200, gin.H{
-			"id":            reviewID,
-			"restaurant_id": review.RestaurantID,
-			"reviewer":      review.Reviewer,
-			"rating":        review.Rating,
-			"comment":       review.Comment,
+		c.JSON(200, models.Review{
+			ID:           reviewID,
+			RestaurantID: review.RestaurantID,
+			Reviewer:     reviewer,
+			Rating:       review.Rating,
+			Comment:      review.Comment,
+			CreatedAt:    createdAt,
+			Image:        review.Image,
 		})
 	}
 }
@@ -239,14 +304,12 @@ func DeleteReview(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id := c.Param("id")
 		userID, exists := c.Get("user_id")
-
 		if !exists {
 			c.JSON(401, gin.H{
 				"message": "User not found",
 			})
 			return
 		}
-
 		userIDInt := userID.(int)
 		result, err := db.Exec(
 			"DELETE FROM reviews WHERE id = $1 AND user_id = $2",
@@ -260,6 +323,7 @@ func DeleteReview(db *sql.DB) gin.HandlerFunc {
 			return
 		}
 		rowsAffected, err := result.RowsAffected()
+
 		if err != nil {
 			c.JSON(500, gin.H{
 				"message": "Failed to check delete",
@@ -282,9 +346,16 @@ func GetReviewsByRestaurant(db *sql.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		restaurantID := c.Param("id")
 		rows, err := db.Query(
-			`SELECT id, restaurant_id, reviewer, rating, comment
+			`SELECT id,
+			        restaurant_id,
+			        reviewer,
+			        rating,
+			        comment,
+			        created_at,
+			        COALESCE(foto_url, '')
 			 FROM reviews
-			 WHERE restaurant_id = $1`,
+			 WHERE restaurant_id = $1
+			 ORDER BY created_at DESC`,
 			restaurantID,
 		)
 		if err != nil {
@@ -303,6 +374,8 @@ func GetReviewsByRestaurant(db *sql.DB) gin.HandlerFunc {
 				&review.Reviewer,
 				&review.Rating,
 				&review.Comment,
+				&review.CreatedAt,
+				&review.Image,
 			)
 			if err != nil {
 				c.JSON(500, gin.H{
@@ -317,24 +390,31 @@ func GetReviewsByRestaurant(db *sql.DB) gin.HandlerFunc {
 }
 
 func GetRestaurantRating(db *sql.DB) gin.HandlerFunc {
-    return func(c *gin.Context) {
-        restaurantID := c.Param("id")
-        var averageRating float64
+	return func(c *gin.Context) {
+		restaurantID := c.Param("id")
+		var averageRating float64
+		var reviewCount int
 		err := db.QueryRow(
-			`SELECT COALESCE(AVG(rating), 0)
-			FROM reviews
-			WHERE restaurant_id = $1`,
+			`SELECT
+				COALESCE(AVG(rating), 0),
+				COUNT(id)
+			 FROM reviews
+			 WHERE restaurant_id = $1`,
 			restaurantID,
-		).Scan(&averageRating)
-        if err != nil {
-            c.JSON(500, gin.H{
-                "message": "Failed to get restaurant rating",
-            })
-            return
-        }
-        c.JSON(200, gin.H{
-            "restaurant_id": restaurantID,
-            "average_rating": averageRating,
-        })
-    }
+		).Scan(
+			&averageRating,
+			&reviewCount,
+		)
+		if err != nil {
+			c.JSON(500, gin.H{
+				"message": "Failed to get restaurant rating",
+			})
+			return
+		}
+		c.JSON(200, gin.H{
+			"restaurant_id":  restaurantID,
+			"average_rating": averageRating,
+			"review_count":   reviewCount,
+		})
+	}
 }

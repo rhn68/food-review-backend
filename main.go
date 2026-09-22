@@ -9,7 +9,13 @@ import (
 
 func main() {
 	router := gin.Default()
-	router.Use(cors.Default())
+	router.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"http://localhost:3000"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+	}))
 	db := connectDatabase()
 	defer db.Close()
 	fmt.Println("Database connected!")
@@ -20,6 +26,9 @@ func main() {
 	router.POST("/restaurants", handlers.CreateRestaurant(db))
 	router.PUT("/restaurants/:id", handlers.UpdateRestaurant(db))
 	router.DELETE("/restaurants/:id", handlers.DeleteRestaurant(db))
+
+	router.GET("/api/tempat/:id/menu", handlers.GetMenus(db)) 
+	router.POST("/api/tempat/:id/menu", handlers.CreateMenu(db))
 
 	router.GET("/reviews", handlers.GetReviews(db))
 	router.POST("/reviews", handlers.AuthMiddleware(), handlers.CreateReview(db))
